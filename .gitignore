@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# CSV gerado por scraping/raspagem real não é versionado (pode ter conteúdo
+# de prova sob direitos autorais, e é dado transitório, não código).
+*.csv
+!sample.csv
