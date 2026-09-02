@@ -12,6 +12,18 @@ Uso:
     python3 scripts/import_questions.py caminho/para.csv --dry-run
     python3 scripts/import_questions.py caminho/para.csv --base-url http://localhost:8080
 
+Autenticação: o backend exige login + plano premium em todas as rotas de
+catálogo/questões (CLAUDE.md do backend, multi-tenancy). Passe as credenciais
+por variável de ambiente — não por argumento de linha de comando, que fica
+gravado no histórico do shell e visível em `ps`:
+
+    STUDYCENTRAL_EMAIL=voce@exemplo.com STUDYCENTRAL_PASSWORD=senha \
+      python3 import_questions.py caminho/para.csv
+
+--dry-run também precisa das credenciais: só a escrita é simulada, a
+leitura inicial do catálogo (pro fuzzy-match de banca/eixo/concurso) é
+sempre real.
+
 Formato do CSV — ver scripts/sample.csv e scripts/README.md para o detalhe
 de cada coluna.
 """
@@ -21,6 +33,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import os
 import re
 import sys
 import unicodedata
@@ -61,6 +74,42 @@ class Client:
         self.dry_run = dry_run
         self.session = requests.Session()
         self._dry_run_next_id = -1
+        # --dry-run só simula ESCRITA (ver post() abaixo) — a leitura inicial
+        # do catálogo (Catalog.__init__, mais abaixo neste arquivo) é sempre
+        # de verdade, mesmo em dry-run, porque é dela que vem o "achei algo
+        # parecido, é a mesma coisa?" do fuzzy match. Por isso login roda
+        # sempre, não só fora de dry-run.
+        self._login()
+
+    def _login(self) -> None:
+        """Troca email/senha (variáveis de ambiente) por um access token e o
+        anexa a toda requisição daqui em diante. Sem isto, todo GET/POST
+        deste script toma 401 — o backend exige sessão premium em
+        /api/subjects, /api/bancas, /api/exams e /api/questions."""
+        email = os.environ.get("STUDYCENTRAL_EMAIL")
+        password = os.environ.get("STUDYCENTRAL_PASSWORD")
+        if not email or not password:
+            print(
+                "faltam credenciais: defina STUDYCENTRAL_EMAIL e "
+                "STUDYCENTRAL_PASSWORD — necessárias mesmo em --dry-run, "
+                "que só simula a escrita, não a leitura do catálogo.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        r = self.session.post(
+            f"{self.base_url}/api/auth/login",
+            json={"email": email, "password": password},
+            timeout=10,
+        )
+        if not r.ok:
+            try:
+                detail = r.json().get("error", r.text)
+            except ValueError:
+                detail = r.text
+            print(f"login falhou: {r.status_code}: {detail}", file=sys.stderr)
+            sys.exit(1)
+        access_token = r.json()["access_token"]
+        self.session.headers.update({"Authorization": f"Bearer {access_token}"})
 
     def get(self, path: str, params: dict | None = None):
         r = self.session.get(f"{self.base_url}{path}", params=params, timeout=10)
